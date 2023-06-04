@@ -1,0 +1,631 @@
+---
+title: "Class1_HW"
+author: "Tey"
+date: "2023-05-31"
+output: html_document
+---
+
+
+Let's import all the required packages
+```{r, echo = FALSE, include= FALSE, warning = FALSE, message = FALSE}
+
+suppressPackageStartupMessages({
+    library(Hmisc) # Contains many functions useful for data analysis
+    library(checkmate) # Fast and Versatile Argument Checks
+    library(corrr) # Correlations in R
+    library(conflicted) # Makes it easier to handle same named functions that are in different packages
+    library(readxl) # reading in Excel files
+    library(dplyr) # data manipulation
+    library(tidyr) # Tidy Messy Data
+    library(ggplot2) # data visualization
+    library(knitr) # knitting data into HTML, Word, or PDF
+    library(evaluate) # Parsing and Evaluation Tools that Provide More Details than the Default
+    library(iopsych) # Methods for Industrial/Organizational Psychology
+    library(psych) # Procedures for Psychological, Psychometric, and Personality Research
+    library(quantreg) # Quantile Regression
+    library(lavaan) # confirmatory factor analysis (CFA) and structural equation modeling (SEM)
+    library(xtable) # Export Tables to LaTeX or HTML
+    library(reshape2) # transforming data between wide and long (tall)
+    library(GPArotation) # GPA Factor Rotation
+    library(Amelia) # A Program for Missing Data
+    # library(esquisse) # Explore and Visualize Your Data Interactively
+    library(expss) # Tables, Labels and Some Useful Functions from Spreadsheets and 'SPSS' Statistics
+    library(multilevel) # Multilevel Functions
+    library(janitor) # 	Simple Tools for Examining and Cleaning Dirty Data
+    library(mice) # Multivariate Imputation by Chained Equations
+    library(skimr) # Exploratory Data Analysis
+    library(lmtest) # A collection of tests, data sets, and examples for diagnostic checking in linear regression models    
+    library(tidylog) # Creates a log to tell you what your tidyverse commands are doing to the data. NOTE: MAKE SURE TO ALWAYS LOAD LAST!!!
+})
+
+for (f in getNamespaceExports("tidylog")) {
+    conflicted::conflict_prefer(f, "tidylog", quiet = TRUE)
+}
+
+```
+
+
+Recall and define the dataset as StatQ
+```{r}
+
+StatQ <- SAQ
+
+```
+
+
+## Missing Data
+Let's see if there's missing data
+```{r}
+
+library(Amelia)
+missmap(StatQ, y.at=c(1), y.labels=c(''), col=c('yellow', 'black'))
+
+```
+
+Yay there is no missing data!
+
+
+## Outlier Detection
+
+Now let's look for outliers with Mahalanobis.
+
+I include only the items of the questionnaire for this EFA. The last few columns (FAC1 and FAC2) looks like some kind of computed scores, which is not needed for EFA
+```{r}
+StatQ_Pure <- StatQ[,1:23]
+```
+
+
+```{r}
+set.seed(123)
+
+##outliers
+cutoff = qchisq(1-.001, ncol(StatQ_Pure))
+mahal = mahalanobis(StatQ_Pure,
+                    colMeans(StatQ_Pure),
+                    cov(StatQ_Pure))
+cutoff ##cutoff score
+ncol(StatQ_Pure) ##df
+summary(mahal < cutoff)
+```
+
+Hmmm... we have 97 False, which is not good.
+
+I wonder how those outliers look like. Let's add a new column "mahal" to mark them.
+```{r}
+StatQ_mahal <- StatQ_Pure %>%
+    bind_cols(mahal) %>%
+    rename(mahal = `...24`) # renaming the new column "mahal"
+```
+
+
+I don't want to just blindly remove entries simply because their score is high. 
+Let's review those that are flagged on a case-by-case basis to see why they are being flagged.
+Zooming in to just the 97 that are false, take a look to confirm if it is truly bad.
+```{r}
+mahal_out <- StatQ_mahal %>%
+    filter(mahal > cutoff) %>%
+    arrange(desc(mahal)) # sort mahal values from most to least
+```
+
+
+It is a little hard to read the data sheet in R, let's export it as excel and work from there.
+```{r}
+
+#Export to Excel
+openxlsx::write.xlsx(mahal_out, "~/Library/Mobile Documents/com~apple~CloudDocs/UGA/Advance Stats/Homework/1/mahal_out.xlsx")
+
+```
+
+Tips: once exported, use conditioning formatting to color the cells of extreme values, look for those rows that has a lot of color cells to screen for extreme responder.
+
+
+## Outlier Omission
+
+It looks like only 2, 8, 13 and 22 are mostly extreme values. The other rows have some variability in their responses, so I am omitting only those 4 rows.
+```{r}
+##exclude outliers
+noout <- StatQ_Pure[-c(2,8,13,22),] 
+
+```
+
+
+
+## Additivity
+
+Now we'll take a look at additivity.
+
+```{r}
+##additivity
+correl = cor(noout, use = "pairwise.complete.obs")
+
+symnum(correl)
+
+correl
+```
+
+We are looking for any 1s off the diagonal. And there is none!
+
+Now, we will set up the rest of the assumptions. We must use a fake regression analysis because, while EFA is regression to the extreme, we still have to screen it with a regular regression analysis. 
+
+Here, the chisq value can be anything larger than 2 (7 seems to work well). The purpose of this regression is that since the data is fake from a generated random number, there shouldn't be any pattern to the residuals. If there is a pattern [fill in what that means]. 
+
+```{r}
+random_outcome = rchisq(nrow(noout), 7)   ##so here we create a random outcome to be predicted by all the items in the questionnaire. Ideally this should be chi-square distributed, and we use a degree of freedom of 7 here.
+fake = lm(random_outcome ~., data = noout)   ##this is the fake model for random_outcome, using predictors from the noout dataframe
+standardized = rstudent(fake)  ## z-scoring to standardize the residual
+fitted = scale(fake$fitted.values)
+```
+
+
+Now we can look at the residuals
+```{r}
+##normality
+hist(standardized)
+```
+
+
+Yay the residuals are normally distributed.
+
+
+## Heteroscedasticity
+### Breusch-Pagan Test
+
+Heteroscedasticity can be checked using the Breusch-Pagan Test. It tells us if we can trust the standard errors from the regression model. 
+
+```{r}
+#load lmtest library
+library(lmtest)
+
+#perform Breusch-Pagan Test
+bptest(fake)
+```
+
+Yay it is not significant (test statistic is 26.70, p-value = 0.2689), that means we fail to reject the null hypothesis. We do not have sufficient evidence to say that heteroscedasticity is present in the regression model.
+
+
+## Q-Q Plot
+
+Check linearity using qqplot.
+
+```{r}
+##linearity
+qqnorm(standardized)
+abline(0,1)
+
+```
+
+This is not good. There is a U-shape bend suggesting there may be some squared relationship in the background.
+But we are going to push thru with this for now. The other option is to transform the variables, which could make the model hard to interpret. The other option could be a non-linear model, which we are not performing in this exercise.
+
+
+## Homogeneity
+
+The next step we need to check homogeneity. With homogeneity, the residuals should spread evenly on the graph.
+
+```{r}
+##homogeneity
+plot(fitted,standardized)
+abline(0,0)
+abline(v = 0)
+```
+
+There appears to be some skew and non-normality, but we will press ahead.
+
+
+## Bartlett's Test
+
+We'll check correlation adequacy with Bartlett's test. We want some correlation, but not too much (too much then they are kind of measuring the same thing). 
+
+```{r}
+##correlation adequacy Bartlett's test
+cortest.bartlett(correl, n = nrow(noout))
+```
+This is significant, that means the correlations are large enough for EFA. 
+
+
+## Histogram
+
+Let's also look at the histogram for each items to see if they are normally distributed, are they discrete/continuous, and if there are any surprising outlier (long tail)
+```{r}
+library(Hmisc)
+hist.data.frame(noout[,1:12])  ##it looks like it can plot a max of 12 histograms, so we are splitting this into 2 combo-graphs.
+```
+
+
+```{r}
+library(Hmisc)
+hist.data.frame(noout[,13:23])  
+```
+
+All items have a bell-curve distribution, except for Question_2 "My friends will think I'm stupid for not being able to cope with SPSS", which have a very distinctive truncated and right-skewed. Will have to keep an eye on this on the later analysis, curious to see how to EFA will turn out with Question_2.
+
+
+## Kaiser, Meyer, Olkin Measure of Sampling Adequacy (KMO) Test
+
+KMO test looks at how suited the data is for factor analysis, we want high values close to 1.
+
+```{r}
+##sampling adequacy KMO test
+KMO(correl[,1:23])
+```
+
+Yay! The overall MSA is 0.93, the ideal range is 0.90 to 1,
+
+
+# EFA analysis
+
+Let's move on to EFA with the noout dataframe
+```{r}
+Stat_Q_Final <- noout 
+```
+
+
+Let's see what are the variables' names
+```{r}
+colnames(Stat_Q_Final)
+```
+
+
+Let's set seed to 2019
+This will allow you to get the exact same results every time as it keeps the "random" "constant".
+```{r}
+set.seed(2019) 
+
+```
+
+
+Let's create an ID variable for our data set.
+```{r}
+#' Let's create an ID variable for our data set.
+
+Stat_Q_Final <- Stat_Q_Final %>% 
+    mutate(ID = row_number())
+```
+
+
+The ID is now on the last column, let's move it to the first column.
+```{r}
+Stat_Q_Final <- Stat_Q_Final %>%
+    dplyr::select(ID, everything())
+```
+
+
+Checking to make sure ID is moved to the first column
+```{r}
+colnames(Stat_Q_Final)
+```
+
+
+## Spliting for training and test
+Now we will create our Training and Test set.
+
+
+I'm thinking of 50:50 for splitting into Training:Test. I don't want to "overtrain" the model and I also want to have enough test sample to check if the model is actually generalizable. There are statistician who support 50:50 split too, see "G. Afendras and M. Markatou, Optimality of training/test size and resampling effectiveness in cross-validation, J. Statis. Plan. Infer. 199 (2019), 286– 301."
+
+```{r}
+training <- sample(Stat_Q_Final$ID, length(Stat_Q_Final$ID)*0.5)
+
+Stat_Q_Final_Training <- subset(Stat_Q_Final, ID %in% training)
+Stat_Q_Final_Test <- subset(Stat_Q_Final, !(ID %in% training))     ## Test set is everything that is not part of the training set
+```
+
+
+Let's visualize the training data set to make sure it still fits assumptions.
+```{r}
+hist(Stat_Q_Final_Training$Question_01, breaks = 6)
+hist(Stat_Q_Final_Training$Question_02, breaks = 6)
+hist(Stat_Q_Final_Training$Question_03, breaks = 6)
+hist(Stat_Q_Final_Training$Question_04, breaks = 6)
+hist(Stat_Q_Final_Training$Question_05, breaks = 6)
+hist(Stat_Q_Final_Training$Question_06, breaks = 6)
+hist(Stat_Q_Final_Training$Question_07, breaks = 6)
+hist(Stat_Q_Final_Training$Question_08, breaks = 6)
+hist(Stat_Q_Final_Training$Question_09, breaks = 6)
+hist(Stat_Q_Final_Training$Question_10, breaks = 6)
+hist(Stat_Q_Final_Training$Question_11, breaks = 6)
+hist(Stat_Q_Final_Training$Question_12, breaks = 6)
+hist(Stat_Q_Final_Training$Question_13, breaks = 6)
+hist(Stat_Q_Final_Training$Question_14, breaks = 6)
+hist(Stat_Q_Final_Training$Question_15, breaks = 6)
+hist(Stat_Q_Final_Training$Question_16, breaks = 6)
+hist(Stat_Q_Final_Training$Question_17, breaks = 6)
+hist(Stat_Q_Final_Training$Question_18, breaks = 6)
+hist(Stat_Q_Final_Training$Question_19, breaks = 6)
+hist(Stat_Q_Final_Training$Question_20, breaks = 6)
+hist(Stat_Q_Final_Training$Question_21, breaks = 6)
+hist(Stat_Q_Final_Training$Question_22, breaks = 6)
+hist(Stat_Q_Final_Training$Question_23, breaks = 6)
+
+```
+
+Hmmmmm, most of them kind of have a bell-curve distribution, despite being skewed. But Question_02 again is truncated and not a bell-curve (normally) distributed.
+
+Ok, now let's take a look at the correlation matrix using the `corrr` package.
+
+```{r}
+library(corrr)
+
+Cor_Mat <- Stat_Q_Final_Training %>%
+    correlate() %>% 
+    shave() %>% # Remove upper triangle
+    fashion() # Print in nice format
+
+print(Cor_Mat)
+```
+I like this triangular format, it is what I usually see in a typical correlation table. But it is a little too wide since we have too many items.
+
+
+Let's present it in a way that everything is displayed in one table:
+```{r}
+library(Hmisc)
+#install.packages("checkmate", dependencies = TRUE)
+library(checkmate)
+MAT_for_Stat_Q_Final_Training <- as.matrix(Stat_Q_Final_Training) ## create a new object that is the matrix of the training dataset
+res <- rcorr(MAT_for_Stat_Q_Final_Training)
+print(res)
+
+```
+
+The correlation between items look okay - it looks like the highest is 0.64. But we also have to see these correlations are significant:
+```{r}
+library(dplyr)
+
+#Flatten Correlation Matrix Function
+
+flattenCorrMatrix <- function(cormat, pmat, nmat) {
+    ut <- upper.tri(cormat)
+    data.frame(
+        row = rownames(cormat)[row(cormat)[ut]],
+        column = rownames(cormat)[col(cormat)[ut]],
+        cor  =(cormat)[ut],
+        p = pmat[ut],
+        n = nmat[ut]
+    )
+}
+
+Data_Flat_Cor_Mat <- flattenCorrMatrix(res$r, res$P, res$n) #these p values match SPSS
+
+Data_Flat_Cor_Mat[,3:5] <- round(Data_Flat_Cor_Mat[,3:5], 3)
+
+#Adding * to any correlation with p<0.05
+Data_Flat_Cor_Mat <- Data_Flat_Cor_Mat %>%
+    mutate(Sig = ifelse(p < 0.05, paste0(p, "*"),
+           p))
+
+Data_Flat_Cor_Mat
+
+```
+
+This is great, but it would be nice if we can see everything at once. Let's export this in excel
+```{r}
+openxlsx::write.xlsx(Data_Flat_Cor_Mat, "~/Library/Mobile Documents/com~apple~CloudDocs/UGA/Advance Stats/Homework/1/FlatCorrelation.xlsx")
+```
+
+In excel, after filtering and sorting, we can see that the range of significant correlations is between -0.44 - 0.61
+
+
+## Parallel Analysis
+Now let's use the parellel analysis and see what is the suggested number of factors we can work with.
+
+```{r}
+library(psych)
+fa.parallel(Stat_Q_Final_Training[c(2:24)])  ## Only do the factor analysis to the items, not including the ID
+```
+
+
+It looks like we have 2 factors as suugested by the FA.
+Let's see if this is the jackpot:
+```{r}
+fa_maxlike_2_training <- fa(Stat_Q_Final_Training[c(2:24)], nfactors = 2, fm="ml")
+
+print(fa_maxlike_2_training)
+```
+
+This is a little overwhelming. Let's look at those that has loading that is 0.3 or more
+```{r}
+print(fa_maxlike_2_training$loadings, cutoff = .3)
+```
+
+
+This looks really good, but let's see if rotation changes things
+```{r}
+fa_maxlike_2_training <- fa(Stat_Q_Final_Training[c(2:24)], nfactors = 2, fm="ml", rotate="promax")
+
+print(fa_maxlike_2_training)
+```
+
+
+```{r}
+print(fa_maxlike_2_training$loadings, cutoff = .3)
+```
+
+
+
+This is interesting. 
+Promax rotation is working pretty well! It looks like *Question_22 and _23 loading is low* in all rotation (the first EFA is Oblique by default) we tried, we may have to drop these item.
+
+Another reason for dropping Question_22 would be that it is word-by-word the same question as Question_09, so this helps us get rid of a duplicated question too.
+
+
+### Experiment with EFA with more factors
+
+Out of curiousity, I wonder how will EFA with 3 factors look like:
+```{r}
+fa_maxlike_3_training <- fa(Stat_Q_Final_Training[c(2:24)], nfactors = 3, fm="ml", rotate="promax")
+
+print(fa_maxlike_3_training)
+```
+
+```{r}
+print(fa_maxlike_3_training$loadings, cutoff = .3)
+```
+
+
+
+So Promax doesn't work for 3 factors, let's see if Oblimin is better:
+```{r}
+fa_maxlike_3_training <- fa(Stat_Q_Final_Training[c(2:24)], nfactors = 3, fm="ml", rotate="oblimin")
+
+print(fa_maxlike_3_training$loadings, cutoff = .3)
+```
+
+Interestingly, 3 factors with Oblimin also works (no cross-loading).
+
+
+How about a 1-factor EFA?
+```{r}
+fa_maxlike_1_training <- fa(Stat_Q_Final_Training[c(2:24)], nfactors = 1, fm="ml", rotate="promax")
+
+print(fa_maxlike_1_training)
+```
+
+Hmmm the RMSEA and TLI is even worse than 2 or 3 factor model.
+
+
+## Number of Factor Decision
+I would still go with 2 factors with Promax. The variance explained is better with the 2 factors model (Cumulative variance is 0.321) as compared with the 3 factors Oblimin model (Cumulative variance is 0.309).
+
+
+Now that we are happy with this 2-factor, maximum likelihood with Promax rotation setting, let's put the laoding into Excel.
+```{r}
+FA_Maxlike_2Factor_Loading <- as.data.frame(round(unclass(fa_maxlike_2_training$loadings), 3))  ##rounding the numbers to 3 decimals
+
+FA_Maxlike_2Factor_Loading
+```
+
+```{r}
+openxlsx::write.xlsx(FA_Maxlike_2Factor_Loading, "~/Library/Mobile Documents/com~apple~CloudDocs/UGA/Advance Stats/Homework/1/EFA_loadings.xlsx")
+```
+
+
+## Scale building
+
+Let's look at the scale property.
+
+Creating a new dataframe that only contain the scale items. But before that let's see what's left in the training dataframe
+```{r}
+colnames(Stat_Q_Final_Training)
+```
+
+```{r}
+library(dplyr)
+SAQ_Items <- Stat_Q_Final_Training %>%
+    dplyr::select(-c(ID, Question_22, Question_23))     ## remember we are dropping Q22 and Q23 because of low loading.
+```
+
+
+Now we can use skimr to have a broad overview of the items
+```{r}
+library(skimr)
+skim(SAQ_Items)
+```
+
+Most of them are normally distributed
+
+
+## Key Maker
+Before we make a list of key, we need to understand the *meaning* of each item.
+
+Reviewing the questions, it looks like Question_03 is measuring the opposite emotion as compared to the rest of the item. We probably need to reverse-score it to match the rest of the scale.
+
+Looking at Factor 1 and 2, it looks like Factor 1 is measuring feelings and perception about statistics, and Factor 2 is specifically phobia about mathematics. So we can list Factor 1 as "Stats_Affect" and Factor 2 as "Mathphobia"
+
+```{r}
+SAQ_keys_list <- list(Stats_Affect = c(1, 2, -3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 18, 19, 20, 21), ##Item 3 need to be reverse scored
+                      Mathphobia = c(8, 11, 17)
+                      )
+
+SAQ_keys <- make.keys(SAQ_Items, SAQ_keys_list, item.labels = colnames(SAQ_Items))
+```
+
+
+Now we will score the items.
+```{r}
+scores <- scoreItems(SAQ_keys, SAQ_Items, impute = "none", 
+                         min = 1, max = 5, digits = 3)
+
+head(scores$scores)
+
+scores_df <- as.data.frame(scores$scores)
+```
+
+
+Spliting each factor out as a scale for scale analysis:
+```{r}
+#' Now let's split out the data into factors for easier analysis
+SA <- SAQ_Items %>%
+    dplyr::select(c(Question_01, Question_02, Question_03, Question_04, Question_05, Question_06, Question_07, Question_09, Question_10, Question_12, Question_13, Question_14, Question_15, Question_16, Question_18, Question_19, Question_20, Question_21))
+MP<- SAQ_Items %>%
+    dplyr::select(c(Question_08, Question_11, Question_17))
+
+```
+
+
+### Scale reliability analysis of Statistic Affect
+
+
+```{r}
+SAQ_keys_list <- list(Stats_Affect=c(1, 2, -3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18))
+
+```
+
+```{r}
+SAQ_keys <- make.keys(SA, SAQ_keys_list, item.labels = colnames(SA))
+```
+
+
+Now we can create the Cronbach's Alpha related items:
+```{r}
+SA_Alpha <- psych::alpha(x = SA[, abs(SAQ_keys_list$Stats_Affect)], keys = SAQ_keys)
+
+SA_total <- round(as.data.frame(SA_Alpha$total), 3)
+SA_alpha_drop <- round(as.data.frame(SA_Alpha$alpha.drop), 3)
+SA_item_stat <- round(as.data.frame(SA_Alpha$item.stats), 3)
+
+SA_Alpha
+```
+
+**How to read this table**
+
+* raw_alpha is alpha based upon the covariance.
+* std.alpha is the standardized alpha based upon the correlations
+* G6(smc) is Guttman's Lamda 6 reliability
+* average_r is the average interitem correlation
+* median_r is the median interitem correlation
+* raw.r is the correlation of each item with the total score, not corrected for item overlap
+* std.r is the correlation of each item with the total score (not corrected for item overlap) if the items were all standardized
+* r.cor is item whole correlation corrected for item overlap and scale reliability
+* r.drop is item whole correlation for this item against the scale without this item
+
+
+SO the raw alpha is 0.79 and standardized alpha is 0.81. Dropping any item does not help increase the overall alpha (see the r.drop column). This suggests that we should keep all the items in this Statistic Affect scale.
+
+
+### Scale reliability analysis of Mathphobia
+
+```{r}
+SAQ_keys_list <- list(Mathphobia=c(1, 2, 3))
+
+```
+
+```{r}
+SAQ_keys <- make.keys(MP, SAQ_keys_list, item.labels = colnames(MP))
+```
+
+
+Now we can create the Cronbach's Alpha related items:
+```{r}
+MP_Alpha <- psych::alpha(x = MP[, abs(SAQ_keys_list$Mathphobia)], keys = SAQ_keys)
+
+MP_total <- round(as.data.frame(MP_Alpha$total), 3)
+MP_alpha_drop <- round(as.data.frame(MP_Alpha$alpha.drop), 3)
+MP_item_stat <- round(as.data.frame(MP_Alpha$item.stats), 3)
+
+MP_Alpha
+```
+
+The raw and standardized alpha are both 0.81. Again, dropping any items in this scale is not helping to increase the alpha, which suggests we should keep all items in the Mathphobia scale.
+
+
+
+
