@@ -1,0 +1,199 @@
+---
+title: "Homework 3"
+author: "Tey"
+date: "2023-07-02"
+output: html_document
+---
+
+```{r, set.seed(1234)}
+knitr::opts_chunk$set(cache.extra = knitr::rand_seed)
+```
+
+Loading the dataframe
+```{r, message=FALSE}
+library(tidymodels)
+
+stringsAsFactors = TRUE
+library(readxl)
+Attrition_Data <- read_excel("~/Library/Mobile Documents/com~apple~CloudDocs/UGA/Advance Stats/UGAIOMP2023/WA_Fn-UseC_-HR-Employee-Attrition.xlsx")
+colnames(Attrition_Data)
+
+str(Attrition_Data)
+```
+
+So there are 35 variables in this dataframe with 1470 observation. Ideally for each predictor we will need about 20 observation, so if we use all predictors we would need at least 700 observation. It looks like this sample size can tolerate models with high number of predictors.
+
+As `Attrition` is our predictor, we do need to make sure there is no missing value in this variable. 
+```{r, message=FALSE}
+Attrition_Data <- as_tibble(Attrition_Data) %>%
+  filter(!is.na(Attrition))
+```
+
+Let's double check for missing with skim
+```{r}
+skimr::skim(Attrition_Data)
+```
+Looks good. No missing value in `attrition`
+
+
+# Agenda
+In this exercise, we will apply Ridge, Lasso and ElasticNet logistic regression to the `Attrition` data
+
+*My goal is to build a model using the variables available to predict `MonthlyIncome`*
+
+Here is the thought process:
+
+1. We will kind of parsnip a ridge/lasso/elasticnet using `glmnet` as the engine under `linear_reg`, and then specify the type of regularization using `mixture`. Mixture 1 is ridge, 0 is lasso, and any value between 0-1 is elasticnet. 
+
+2. Although the recipe and workflow, training-test split, and prediction steps are very similar to the previous linear reg, we need to figure what penalty to apply in each model. Penalty can be optimized for `rsq` or`rmse`, tho rmse is more widely used for people analytic purpose. This process is captured as hyperparameter tuning under `tune_grid`. `best_penalty` is a quick way for specifying the best penalty to use for each model.
+
+Before we get into the regression specifics, let's set up the validation split first
+```{r}
+Attrition_split <- initial_split(Attrition_Data, strata = "MonthlyIncome")
+Attrition_train <- training(Attrition_split)
+Attrition_test <- testing(Attrition_split)
+Attrition_fold <- vfold_cv(Attrition_train, v = 10)
+```
+
+
+## Ridge Regression
+
+We start with a recipe first, then we build a spec, finally feed them to a workflow
+```{r}  
+attrition_ridge_recipe <- 
+  recipe(formula = MonthlyIncome ~ ., data = Attrition_train) %>% 
+  step_novel(all_nominal_predictors()) %>%    ## the step-novel and step_dummy will process the categorical variables
+  step_dummy(all_nominal_predictors()) %>% 
+  step_zv(all_predictors()) %>% 
+  step_normalize(all_predictors())            ## ridge regression requires all scales to be standardize, and this command does that
+```
+
+We are writing a blind spec here - even tho the penalty is undecided, this spec and workflow are needed in the `tune_grid` (a way to find the best penalty) later. 
+```{r}
+attrition_ridge_spec <- 
+ linear_reg(penalty = tune(), mixture = 0) %>% 
+  set_mode("regression") %>% 
+  set_engine("glmnet")
+```
+
+```{r}
+attrition_ridge_workflow <- workflow() %>% 
+  add_recipe(attrition_ridge_recipe) %>% 
+  add_model(attrition_ridge_spec)
+```
+
+
+### Finding best penalty
+We also need to figure out what penalty to use in our regression spec:
+```{r}
+penalty_grid <- grid_regular(penalty(range = c(-5, 5)), levels = 50) 
+penalty_grid
+```
+
+```{r}
+tune_res <- tune_grid(
+  attrition_ridge_workflow,
+  resamples = Attrition_fold, 
+  grid = penalty_grid
+)
+tune_res
+```
+
+```{r}
+collect_metrics(tune_res)
+```
+
+
+```{r}
+best_penalty <- select_best(tune_res, metric = "rmse")
+best_penalty
+```
+
+```{r}
+ridge_final <- finalize_workflow(attrition_ridge_workflow, best_penalty)
+ridge_final_fit <- fit(ridge_final, data = Attrition_train)
+```
+
+
+```{r}
+augment(ridge_final_fit, new_data = Attrition_test) %>%
+  rsq(truth = MonthlyIncome, estimate = .pred)
+```
+
+
+## Lasso Regression
+Let's also experiment with lasso and see if the prediction is different
+
+Building the recipe. This is very much the same preparation we have done above
+```{r}
+lasso_recipe <- 
+  recipe(formula = MonthlyIncome ~ ., data = Attrition_train) %>% 
+  step_novel(all_nominal_predictors()) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_zv(all_predictors()) %>% 
+  step_normalize(all_predictors())
+```
+
+Spec this time is Mixture = 1 to switch to Lasso
+```{r}
+lasso_spec <- 
+  linear_reg(penalty = tune(), mixture = 1) %>% 
+  set_mode("regression") %>% 
+  set_engine("glmnet") 
+lasso_workflow <- workflow() %>% 
+  add_recipe(lasso_recipe) %>% 
+  add_model(lasso_spec)
+```
+
+Again we need to figure out the penalty for Lasso
+```{r}
+penalty_grid <- grid_regular(penalty(range = c(-2, 2)), levels = 50)
+```
+
+```{r}
+tune_res <- tune_grid(
+  lasso_workflow,
+  resamples = Attrition_fold, 
+  grid = penalty_grid
+)
+autoplot(tune_res)
+```
+
+And again we will use select_best to help us optimize the penalty
+```{r}
+best_penalty_rmse <- select_best(tune_res, metric = "rmse")  ##again we use RMSE since this is more commonly use for people analytics
+best_penalty_rmse
+```
+
+the best penalty seems to be working fine. Now we will push this into the final lasso model
+```{r}
+lasso_final <- finalize_workflow(lasso_workflow, best_penalty)
+lasso_final_fit <- fit(lasso_final, data = Attrition_train)
+```
+
+Awesome! Now is the fun part. Let's see if the prediction is similar to the Ridge model:
+```{r}
+augment(lasso_final_fit, new_data = Attrition_test) %>%
+  rsq(truth = MonthlyIncome, estimate = .pred)
+```
+
+# Conclusion
+Lasso is 0.9416 and Ridge is 0.9393. The difference is not huge.
+
+
+I wonder how the prediction looks like compare to the actual value
+```{r}
+augment(lasso_final_fit, new_data = Attrition_Data) %>%
+  select(MonthlyIncome, .pred)
+```
+
+How about ridge prediction vs reality
+```{r}
+augment(ridge_final_fit, new_data = Attrition_Data) %>%
+  select(MonthlyIncome, .pred)
+```
+
+
+## Bonus
+This file has been upload to GitHub - 
+
