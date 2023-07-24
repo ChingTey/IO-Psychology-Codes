@@ -1,0 +1,908 @@
+---
+title: "Homework 4"
+author: "Tey"
+date: "2023-07-20"
+output: html_document
+---
+
+Let's load libraries and the glassdoor dataset
+```{r}
+library(openxlsx)
+library(tidyverse)
+library(devtools)
+library(conflicted)
+library(lubridate)
+library(sentimentr)
+library(openxlsx)
+library(tidyverse)
+library(devtools)
+library(conflicted)
+library(lubridate)
+library(sentimentr)
+library(gdscrapeR)
+```
+
+```{r}
+conflict_prefer("filter", "dplyr")
+```
+
+```{r}
+library(readr)
+Data <- read_csv("~/Library/Mobile Documents/com~apple~CloudDocs/UGA/Advance Stats/Class 4/glassdoortest1.csv")
+```
+
+This HoneyWell data from GlassDoor has 2000 observation, and the comments comes in pros and cons (positive and negative comments).
+
+
+# Cleaning and preping dataframe for analysis
+Renaming the first col to ID
+```{r}
+Data <- Data %>%
+    rename(ID = "...1")
+```
+
+Let's create a new dataframe for just positive comment for further processing
+```{r}
+Pos_Comment <- Data %>%
+    select(c(ID, pros)) %>%
+    filter(!is.na(pros))
+```
+
+*spoiler* we know there is this weird character (uFFFD) that will affect later analysis, 
+```{r}
+library(stringi)
+Pos_Comment <- Pos_Comment %>%
+  as_tibble() %>%
+  mutate(pros = str_replace_all(pros, "\uFFFD", "")) 
+```
+
+This may not work, but if it does, it should convert all texts to lowercase (so it will be easier to code with regex, no need to bother to include uppercase) 
+```{r}
+Pos_Comment <- Pos_Comment %>%
+    mutate(pros = tolower(pros))
+```
+
+Also remove line breaks
+```{r}
+Pos_Comment$pros <- gsub("[\r\n]", "", Pos_Comment$pros)
+
+Pos_Comment <- Pos_Comment %>%
+    select(ID, pros) %>%
+    na.omit()
+```
+
+
+# Creating Concepts / Themes
+Now we can digest the positive comments into specific concepts (kind of like thematic analysis in quali analysis).
+
+Since these are comments about employer, we can explore:
+* Benefits - Healthcare/Dental/Vision, 
+            Time off (vacation, PTO, maternity leaves...)
+* Financial Support - Reimbursement, car, travel, perks
+                      Retirement (401K)
+                      Tuition/Scholarship, 
+                      hardship funds...
+* Career/skill advancement - promotion (advancement, growth, opportunity) 
+                              Skill workshop, training/certification, learn/learning
+* Compensation - pay/wage/rate, Pay raise, 
+                  competitiveness...inflation-resistance/market 
+                  fairness
+* Direct Manager - Performance review/ manager feedback
+                    leadership (leader, manager, management, transformational, charismatic, democratic, participative...)
+* Safety - protection, safe, COVID
+* Affect - respect, belonging, family, friends
+* Culture - corporate value (job security, ethical, brand/branding, meaningful, care)
+            environmental friendly, sustainability, green 
+            team/coworker (helpful, smart, teamwork, )
+            work-family balance / work-life balance
+            mental health (anti-burnout)
+            Work condition (busy, chanllenging, collaborative)
+* Autonomy - flexible schedule/hour,flex time, work from home/wfh, 
+
+## 1 Benefit
+Let's build a classifier for the first meta-category *Benefits* 
+p/s: use thesaurus to get some idea of adjacent words for the concept
+```{r}
+#Benefit is a large concept, so let's cast a wide net to include healthcare, timeoff etc...
+
+benefits <- c('\\brx\\b', #this will only get the word "rx" and nothing else
+              '^.*medic.*$', #this will get medic, medicine, medical, etc.
+              '(?=.*bene)(?=.*(?:health))', #This will get benefits, beneficial, benefit, etc. but only if it occurs with health, healthy, healthcare, in the same comment
+              '(?=.*coverage)(?=.*(?:medic|deduct|prescrip|insur|drug|health|dependent))', #This will get coverage, overages, etc. as long as some form of medic, deduct, prescription, etc. occur in the same comment
+                    '\\b(?:health\\W+(?:\\w+\\W+){0,1}?care)\\b', #this will only get health care or healthcare (e.g. health and care must occur within one word)
+                    '\\bhealthcare\\b', #this will only get the word "healthcare". If there is a space between them, it won't pick it up.
+              '\\bhealth\\s?care\\b', #this will get the word "healthcare" or "health care" as the \\s? indicates zero or one whitespace character.
+                    '\\b(?:medical\\W+(?:\\w+\\W+){0,3}?benefits|benefits\\W+(?:\\w+\\W+){0,3}?medical)\\b', #This will get medical benefits or benefits medical as long as they occur within 3 word of each other.
+              '^.*vacation.*$',
+              '\\b(?:time\\W+(?:\\w+\\W+){0,1}?off)\\b', #timeoff or time-off or time off
+              '\\b(?:day\\W+(?:\\w+\\W+){0,1}?off)\\b', #dayoff or day off
+              '\\bsabbatical\\b',
+              '\\bleave\\b',
+              '\\bpto\\b'  #pto
+                     )
+
+benefits_pattern <- paste(benefits, collapse = "|") #This puts everything from what you put into `benefits` together into a pattern to search for.
+
+benefits_comments <- as.data.frame(Pos_Comment[grep(benefits_pattern, Pos_Comment$pros, value = FALSE, perl = TRUE),]) # This takes the pattern you just created and searches over the entire column of "comments" in the Comments_df
+
+TEST <- Pos_Comment %>%
+    mutate(benefits = ifelse(pros %in% benefits_comments$pros, "Y",
+                             "N")) #This creates a new object, TEST, from Comments_df and if any of the comments in the "comments" column match (%in%) the comments exactly, they get a "Y". If not they get a "N" in the new "benefits" column
+```
+
+## 2 Benefits - healthcare
+Now we have the big theme for benefit, let's also code for the subcategory *benefits - healthcare*
+```{r}
+benefits_healthcare <- c('(?=.*insur)(?=.*(?:medic|dental|life|vision|supplement|disabl))',
+                        '\\b(?:insurance\\W+(?:\\w+\\W+){0,1}?premium)\\b',
+                        '\\binsurance\\b',
+              '^.*medic.*$', #this will get medic, medicine, medical, etc.
+              '(?=.*bene)(?=.*(?:health))', #This will get benefits, beneficial, benefit, etc. but only if it occurs with health, healthy, healthcare, in the same comment
+              '(?=.*coverage)(?=.*(?:medic|deduct|prescrip|insur|drug|health|dependent))', #This will get coverage, overages, etc. as long as some form of medic, deduct, prescription, etc. occur in the same comment
+                    '\\b(?:health\\W+(?:\\w+\\W+){0,1}?care)\\b', #this will only get health care or healthcare (e.g. health and care must occur within one word)
+                    '\\bhealthcare\\b', #this will only get the word "healthcare". If there is a space between them, it won't pick it up.
+              '\\bhealth\\s?care\\b', #this will get the word "healthcare" or "health care" as the \\s? indicates zero or one whitespace character.
+                    '\\b(?:medical\\W+(?:\\w+\\W+){0,3}?benefits|benefits\\W+(?:\\w+\\W+){0,3}?medical)\\b' #This will get medical benefits or benefits medical as long as they occur within 3 word of each other.
+                     )
+
+benefits_healthcare_pattern <- paste(benefits_healthcare, collapse = "|") #This puts everything from what you put into `benefits` together into a pattern to search for.
+
+benefits_healthcare_comments <- as.data.frame(Pos_Comment[grep(benefits_healthcare_pattern, Pos_Comment$pros, value = FALSE, perl = TRUE),]) # This takes the pattern you just created and searches over the entire column of "comments" in the Comments_df
+
+TEST <- TEST %>%
+    mutate(benefits_healthcare = ifelse(pros %in% benefits_healthcare_comments$pros, "Y",
+                             "N")) #This creates a new object, TEST, from Comments_df and if any of the comments in the "comments" column match (%in%) the comments exactly, they get a "Y". If not they get a "N" in the new "benefits" column
+```
+
+
+## 3 Benefits-Time Off
+And we will make *Benefits-TimeOff* a separate subcategory too
+```{r}
+benefits_timeoff <- c('^.*vacation.*$',
+              '\\b(?:time\\W+(?:\\w+\\W+){0,1}?off)\\b', #timeoff or time-off or time off
+              '\\b(?:day\\W+(?:\\w+\\W+){0,1}?off)\\b', #dayoff or day off
+              '\\bsabbatical\\b',
+              '\\bleave\\b',
+              '\\bmaternity\\b',
+              '\\bpto\\b'
+                     )
+
+benefits_timeoff_pattern <- paste(benefits_timeoff, collapse = "|") #This puts everything from what you put into `benefits` together into a pattern to search for.
+
+benefits_timeoff_comments <- as.data.frame(Pos_Comment[grep(benefits_timeoff_pattern, Pos_Comment$pros, value = FALSE, perl = TRUE),]) # This takes the pattern you just created and searches over the entire column of "comments" in the Comments_df
+
+TEST <- TEST %>%
+    mutate(benefits_timeoff = ifelse(pros %in% benefits_timeoff_comments$pros, "Y",
+                             "N"))
+```
+
+
+#4 Financial - Support
+```{r}
+financial_suport <- c( '^.*reimbursement*$', #just in case plural form, keep the end open
+                       '^.*reimburs*$', #same logic, keep the end open
+                       '\\bcar\\b',
+                       '^.*travel*$', #open ending
+                       '\\bperks\\b'
+                       )
+financial_suport_pattern <- paste(financial_suport, collapse = "|") 
+
+financial_suport_comments <- as.data.frame(Pos_Comment[grep(financial_suport_pattern, Pos_Comment$pros, value = FALSE, perl = TRUE),])
+
+TEST <- TEST %>%
+    mutate(financial_suport = ifelse(pros %in% financial_suport_comments$pros, "Y",
+                             "N"))
+```
+
+
+#5 Financial - Retirement
+```{r}
+financial_retirement <- c( '^.*retir*$', #open ending
+                        '\\b(?:401\\W+(?:\\w+\\W+){0,1}?k)\\b' #401k or 401 k
+                       )
+financial_retirement_pattern <- paste(financial_retirement, collapse = "|") 
+
+financial_retirement_comments <- as.data.frame(Pos_Comment[grep(financial_retirement_pattern, Pos_Comment$pros, value = FALSE, perl = TRUE),])
+
+TEST <- TEST %>%
+    mutate(financial_retirement = ifelse(pros %in% financial_retirement_comments$pros, "Y",
+                             "N"))
+```
+
+
+#6 Financial - Education
+```{r}
+financial_education <- c( '\\btuition\\b',
+                       '^.*scholarship*$', #open ending
+                       '^.*sponsor*$' #open ending, can include sponsorship or sponsoring
+                       )
+financial_education_pattern <- paste(financial_education, collapse = "|") 
+
+financial_education_comments <- as.data.frame(Pos_Comment[grep(financial_education_pattern, Pos_Comment$pros, value = FALSE, perl = TRUE),])
+
+TEST <- TEST %>%
+    mutate(financial_education = ifelse(pros %in% financial_education_comments$pros, "Y",
+                             "N"))
+```
+
+
+#7 Financial - hardship
+```{r}
+financial_hardship <- c( '\\bhardship\\b',
+                       '^.*assist*$', #open ending, assists, assistance, assisting
+                       '\\brelief\\b', #open ending, can include sponsorship or sponsoring
+                       '^.*relieve*$' #open ending,
+                       )
+financial_hardship_pattern <- paste(financial_hardship, collapse = "|") 
+
+financial_hardship_comments <- as.data.frame(Pos_Comment[grep(financial_hardship_pattern, Pos_Comment$pros, value = FALSE, perl = TRUE),])
+
+TEST <- TEST %>%
+    mutate(financial_hardship = ifelse(pros %in% financial_hardship_comments$pros, "Y",
+                             "N"))
+```
+
+
+#8 Career - Advancement
+```{r}
+career_advancement <- c( '\\bpromotion\\b',
+                       '^.*advanc*$', #open ending, advancing, advancement
+                       '^.*grow*$', #open ending, growth, growing
+                       '\\bcareer\\b', #open ending, can include sponsorship or sponsoring
+                       '^.*opportunit*$' #open ending
+                       )
+career_advancement_pattern <- paste(career_advancement, collapse = "|") 
+
+career_advancement_comments <- as.data.frame(Pos_Comment[grep(career_advancement_pattern, Pos_Comment$pros, value = FALSE, perl = TRUE),])
+
+TEST <- TEST %>%
+    mutate(career_advancement = ifelse(pros %in% career_advancement_comments$pros, "Y",
+                             "N"))
+```
+
+#9 Career - Train
+```{r}
+career_train <- c('^.*skill*$', #skills, skillset
+                  '^.*train*$', #training, trains
+                  '^.*certificat*$', # certification, certificate
+                  '\\bcert\\b',
+                  '^.*learn*$' #learning, learns, learned
+                       )
+career_train_pattern <- paste(career_train, collapse = "|") 
+
+career_train_comments <- as.data.frame(Pos_Comment[grep(career_train_pattern, Pos_Comment$pros, value = FALSE, perl = TRUE),])
+
+TEST <- TEST %>%
+    mutate(career_train = ifelse(pros %in% career_train_comments$pros, "Y",
+                             "N"))
+```
+
+
+#10 Compensation - Pay
+```{r}
+compensation_pay <- c('^.*compensat*$', #compensates,compensation
+                  '^.*pay*$', #pay, paying, pays, payrate
+                  '^.*wage*$', #wages
+                  '\\brate\\b',
+                  '\\bpay\\b',
+                  '\\bwage\\b',
+                  '\\b(?:pay\\W+(?:\\w+\\W+){0,1}?raise)\\b'
+                       )
+compensation_pay_pattern <- paste(compensation_pay, collapse = "|") 
+
+compensation_pay_comments <- as.data.frame(Pos_Comment[grep(compensation_pay_pattern, Pos_Comment$pros, value = FALSE, perl = TRUE),])
+
+TEST <- TEST %>%
+    mutate(compensation_pay = ifelse(pros %in% compensation_pay_comments$pros, "Y",
+                             "N"))
+```
+
+
+#11 Compensation - fair
+```{r}
+compensation_fair <- c('^.*fair*$', #fairness,
+                  '\\bfair\\b'
+                       )
+compensation_fair_pattern <- paste(compensation_fair, collapse = "|") 
+
+compensation_fair_comments <- as.data.frame(Pos_Comment[grep(compensation_fair_pattern, Pos_Comment$pros, value = FALSE, perl = TRUE),])
+
+TEST <- TEST %>%
+    mutate(compensation_fair = ifelse(pros %in% compensation_fair_comments$pros, "Y",
+                             "N"))
+```
+
+
+#12 Compensation - Competitiveness
+```{r}
+compensation_competitiveness <- c('^.*compentitive*$', #competitive, competitiveness
+                  '^.*inflation*$', #inflation, inflations
+                  '\\bmarket\\b'
+                       )
+compensation_competitiveness_pattern <- paste(compensation_competitiveness, collapse = "|") 
+
+compensation_competitiveness_comments <- as.data.frame(Pos_Comment[grep(compensation_competitiveness_pattern, Pos_Comment$pros, value = FALSE, perl = TRUE),])
+
+TEST <- TEST %>%
+    mutate(compensation_competitiveness = ifelse(pros %in% compensation_competitiveness_comments$pros, "Y",
+                             "N"))
+```
+
+
+#13 Manager - feedback
+```{r}
+manager_feedback <- c('^.*review*$', #review, reviews
+                      '^.*leader*$', #leaders, leadership
+                      '^.*manag*$', #managing, management, managers
+                      '\\bfeedback\\b',
+                  '\\bperformance\\b'
+                       )
+manager_feedback_pattern <- paste(manager_feedback, collapse = "|") 
+
+manager_feedback_comments <- as.data.frame(Pos_Comment[grep(manager_feedback_pattern, Pos_Comment$pros, value = FALSE, perl = TRUE),])
+
+TEST <- TEST %>%
+    mutate(manager_feedback = ifelse(pros %in% manager_feedback_comments$pros, "Y",
+                             "N"))
+```
+
+
+#14 Manager - leadership
+```{r}
+manager_leadership <- c('^.*leader*$', #leaders, leadership
+                        '^.*lead*$',
+                      '^.*manag*$', #managing, management, managers
+                      '^.*charisma*$', #charisma, charismatic
+                  '^.*democrat*$'   #democratic
+                       )
+manager_leadership_pattern <- paste(manager_leadership, collapse = "|") 
+
+manager_leadership_comments <- as.data.frame(Pos_Comment[grep(manager_leadership_pattern, Pos_Comment$pros, value = FALSE, perl = TRUE),])
+
+TEST <- TEST %>%
+    mutate(manager_leadership = ifelse(pros %in% manager_leadership_comments$pros, "Y",
+                             "N"))
+```
+
+
+#15 Safety
+```{r}
+safety <- c('^.*safe*$', #safety
+                        '^.*protect*$', #protection, protecting
+                      '\\bcovid\\b'
+                       )
+safety_pattern <- paste(safety, collapse = "|") 
+
+safety_comments <- as.data.frame(Pos_Comment[grep(safety_pattern, Pos_Comment$pros, value = FALSE, perl = TRUE),])
+
+TEST <- TEST %>%
+    mutate(safety = ifelse(pros %in% safety_comments$pros, "Y",
+                             "N"))
+```
+
+
+#16 Affect
+```{r}
+affect <- c('^.*belong*$', #belonging
+            '\\bfamily\\b',
+            '^.*friend*$', #friends, friendly
+            '\\blove\\b',
+            '\\brespect\\b'
+                       )
+affect_pattern <- paste(affect, collapse = "|") 
+
+affect_comments <- as.data.frame(Pos_Comment[grep(affect_pattern, Pos_Comment$pros, value = FALSE, perl = TRUE),])
+
+TEST <- TEST %>%
+    mutate(affect = ifelse(pros %in% affect_comments$pros, "Y",
+                             "N"))
+```
+
+
+#17 Culture - Value
+```{r}
+culture_value <- c('\\b(?:job\\W+(?:\\w+\\W+){0,1}?security)\\b',
+            '\\bsecurity\\b', 
+            '^.*ethic*$', #ethics, ethical
+            '^.*brand*$', #branding, brand
+            '^.*meaning*$', #meaningful
+            '\\bcare\\b',
+            '\\bcaring\\b'
+                       )
+culture_value_pattern <- paste(culture_value, collapse = "|") 
+
+culture_value_comments <- as.data.frame(Pos_Comment[grep(culture_value_pattern, Pos_Comment$pros, value = FALSE, perl = TRUE),])
+
+TEST <- TEST %>%
+    mutate(culture_value = ifelse(pros %in% culture_value_comments$pros, "Y",
+                             "N"))
+```
+
+
+#18 Culture - Sustainability
+```{r}
+culture_sustain <- c('^.*environment*$', #environmental
+            '\\bgreen\\b', 
+            '^.*sustain*$' #sustainability, sustains
+                       )
+culture_sustain_pattern <- paste(culture_sustain, collapse = "|") 
+
+culture_sustain_comments <- as.data.frame(Pos_Comment[grep(culture_sustain_pattern, Pos_Comment$pros, value = FALSE, perl = TRUE),])
+
+TEST <- TEST %>%
+    mutate(culture_sustain = ifelse(pros %in% culture_sustain_comments$pros, "Y",
+                             "N"))
+```
+
+
+#19 Culture - Team
+```{r}
+culture_team <- c('^.*help*$', #helpful, helping
+            '^.*team*$', #teamwork
+            '\\bsmart\\b',
+            '\\bcoworker\\b' 
+                       )
+culture_team_pattern <- paste(culture_team, collapse = "|") 
+
+culture_team_comments <- as.data.frame(Pos_Comment[grep(culture_team_pattern, Pos_Comment$pros, value = FALSE, perl = TRUE),])
+
+TEST <- TEST %>%
+    mutate(culture_team = ifelse(pros %in% culture_team_comments$pros, "Y",
+                             "N"))
+```
+
+
+#20 Culture - work-family balance
+```{r}
+culture_wfb <- c('\\b(?:work\\W+(?:\\w+\\W+){0,1}?family)\\b', #workfamily or work-family or work family
+                 '\\b(?:work\\W+(?:\\w+\\W+){0,1}?life)\\b',
+                 '^.*balanc*$' #balancing
+                       )
+culture_wfb_pattern <- paste(culture_wfb, collapse = "|") 
+
+culture_wfb_comments <- as.data.frame(Pos_Comment[grep(culture_wfb_pattern, Pos_Comment$pros, value = FALSE, perl = TRUE),])
+
+TEST <- TEST %>%
+    mutate(culture_wfb = ifelse(pros %in% culture_wfb_comments$pros, "Y",
+                             "N"))
+```
+
+
+#21 Culture - mental health
+```{r}
+culture_mental <- c('\\b(?:mental\\W+(?:\\w+\\W+){0,1}?health)\\b', 
+                 '\\b(?:anti\\W+(?:\\w+\\W+){0,1}?burnout)\\b', #anti-burnout, anti burnout
+                 '\\b(?:burn\\W+(?:\\w+\\W+){0,1}?out)\\b',
+                 '^.*exhaust*$',   #exhaust,exhaustion, exhausting
+                 '\\bfatigue\\b'
+                       )
+culture_mental_pattern <- paste(culture_mental, collapse = "|") 
+
+culture_mental_comments <- as.data.frame(Pos_Comment[grep(culture_mental_pattern, Pos_Comment$pros, value = FALSE, perl = TRUE),])
+
+TEST <- TEST %>%
+    mutate(culture_mental = ifelse(pros %in% culture_mental_comments$pros, "Y",
+                             "N"))
+```
+
+
+#22 Culture - work condition
+```{r}
+culture_work <- c('^.*challeng*$',   #challenging, challenges
+                 '\\bbusy\\b',
+                 '^.*collaborat*$' #collaborative, collaborate
+                       )
+culture_work_pattern <- paste(culture_work, collapse = "|") 
+
+culture_work_comments <- as.data.frame(Pos_Comment[grep(culture_work_pattern, Pos_Comment$pros, value = FALSE, perl = TRUE),])
+
+TEST <- TEST %>%
+    mutate(culture_work = ifelse(pros %in% culture_work_comments$pros, "Y",
+                             "N"))
+```
+
+
+#23 Autonomy
+```{r}
+autonomy <- c('\\baautonomy\\b',
+              '^.*flex*$',   #flexible, flex
+              '\\baautonomy\\b',
+              '^.*hour*$',
+              '\\b(?:flex\\W+(?:\\w+\\W+){0,1}?time)\\b',
+              '\\b(?:flex\\W+(?:\\w+\\W+){0,1}?hour)\\b',
+              '\\b(?:flex\\W+(?:\\w+\\W+){0,1}?schedule)\\b',
+              '\\b(?:flexible\\W+(?:\\w+\\W+){0,1}?time)\\b',
+              '\\b(?:flexible\\W+(?:\\w+\\W+){0,1}?hour)\\b',
+              '\\b(?:flexible\\W+(?:\\w+\\W+){0,1}?schedule)\\b',
+              '\\b(?:from\\W+(?:\\w+\\W+){0,1}?home)\\b' #from-home, from home
+                       )
+autonomy_pattern <- paste(autonomy, collapse = "|") 
+
+autonomy_comments <- as.data.frame(Pos_Comment[grep(autonomy_pattern, Pos_Comment$pros, value = FALSE, perl = TRUE),])
+
+TEST <- TEST %>%
+    mutate(autonomy = ifelse(pros %in% autonomy_comments$pros, "Y",
+                             "N"))
+```
+
+
+I realize people also use the Pros section for negative comment. Let's create a screening topic to capture these so we can take them out later, or group them to Cons datasheet.
+
+#24 Negative topic
+```{r}
+negative <- c('\\bnegative\\b',
+              '\\bnothing\\b',
+              '\\bbad\\b',
+              '\\bhorrible\\b',
+              '\\b(?:not\\W+(?:\\w+\\W+){0,1}?recommend)\\b'
+                       )
+negative_pattern <- paste(negative, collapse = "|") 
+
+negative_comments <- as.data.frame(Pos_Comment[grep(negative_pattern, Pos_Comment$pros, value = FALSE, perl = TRUE),])
+
+TEST <- TEST %>%
+    mutate(negative = ifelse(pros %in% negative_comments$pros, "Y",
+                             "N"))
+```
+
+
+#25 Other
+
+Let's also create a topic to cover everything that is not captured. We will need to review these, it could be deficient coding for the categories.
+```{r}
+TEST <- TEST %>%
+    mutate(Other = apply(TEST, 1, function(y){ ifelse("Y" %in% y, "N", "Y")}))
+
+```
+
+
+# Negative Comments
+
+```{r}
+Neg_Comment <- Data %>%
+    select(c(ID, cons)) %>%
+    filter(!is.na(cons))
+```
+
+*spoiler* we know there is this weird character (uFFFD) that will affect later analysis, 
+```{r}
+library(stringi)
+Neg_Comment <- Neg_Comment %>%
+  as_tibble() %>%
+  mutate(cons = str_replace_all(cons, "\uFFFD", "")) 
+```
+
+This may not work, but if it does, it should convert all texts to lowercase (so it will be easier to code with regex, no need to bother to include uppercase) 
+```{r}
+Neg_Comment <- Neg_Comment %>%
+    mutate(cons = tolower(cons))
+```
+
+Also remove line breaks
+```{r}
+Neg_Comment$cons <- gsub("[\r\n]", "", Neg_Comment$cons)
+
+Neg_Comment <- Neg_Comment %>%
+    select(ID, cons) %>%
+    na.omit()
+```
+
+
+Now let's feed the comments into the categories we just built
+
+#1 Benefit
+```{r}
+benefits_comments_2 <- as.data.frame(Neg_Comment[grep(benefits_pattern, Neg_Comment$cons, value = FALSE, perl = TRUE),])
+
+TEST2 <- Neg_Comment %>%
+    mutate(neg_benefits = ifelse(cons %in% benefits_comments_2$cons, "Y",
+                             "N")) 
+```
+
+## 2 Benefits - healthcare
+```{r}
+benefits_healthcare_comments_2 <- as.data.frame(Neg_Comment[grep(benefits_healthcare_pattern, Neg_Comment$cons, value = FALSE, perl = TRUE),]) 
+
+TEST2 <- TEST2 %>%
+    mutate(neg_benefits_healthcare = ifelse(cons %in% benefits_healthcare_comments_2$cons, "Y",
+                             "N"))
+```
+
+## 3 Benefits-Time Off
+And we will make *Benefits-TimeOff* a separate subcategory too
+```{r}
+benefits_timeoff_comments_2 <- as.data.frame(Neg_Comment[grep(benefits_timeoff_pattern, Neg_Comment$cons, value = FALSE, perl = TRUE),])
+
+TEST2 <- TEST2 %>%
+    mutate(neg_benefits_timeoff = ifelse(cons %in% benefits_timeoff_comments_2$cons, "Y",
+                             "N"))
+```
+
+#4 Financial - Support
+```{r}
+financial_suport_comments_2 <- as.data.frame(Neg_Comment[grep(financial_suport_pattern, Neg_Comment$cons, value = FALSE, perl = TRUE),])
+
+TEST2 <- TEST2 %>%
+    mutate(neg_financial_suport = ifelse(cons %in% financial_suport_comments_2$cons, "Y",
+                             "N"))
+```
+
+
+#5 Financial - Retirement
+```{r}
+financial_retirement_comments_2 <- as.data.frame(Neg_Comment[grep(financial_retirement_pattern, Neg_Comment$cons, value = FALSE, perl = TRUE),])
+
+TEST2 <- TEST2 %>%
+    mutate(neg_financial_retirement = ifelse(cons %in% financial_retirement_comments_2$cons, "Y",
+                             "N"))
+```
+
+#6 Financial - Education
+```{r}
+neg_financial_education_comments <- as.data.frame(Neg_Comment[grep(financial_education_pattern, Neg_Comment$cons, value = FALSE, perl = TRUE),])
+
+TEST2 <- TEST2 %>%
+    mutate(neg_financial_education = ifelse(cons %in% neg_financial_education_comments$cons, "Y",
+                             "N"))
+```
+
+#7 Financial - hardship
+```{r}
+neg_financial_hardship_comments <- as.data.frame(Neg_Comment[grep(financial_hardship_pattern, Neg_Comment$cons, value = FALSE, perl = TRUE),])
+
+TEST2 <- TEST2 %>%
+    mutate(neg_financial_hardship = ifelse(cons %in% neg_financial_hardship_comments$cons, "Y",
+                             "N"))
+```
+
+#8 Career - Advancement
+```{r}
+neg_career_advancement_comments <- as.data.frame(Neg_Comment[grep(career_advancement_pattern, Neg_Comment$cons, value = FALSE, perl = TRUE),])
+
+TEST2 <- TEST2 %>%
+    mutate(neg_career_advancement = ifelse(cons %in% neg_career_advancement_comments$cons, "Y",
+                             "N"))
+```
+
+
+#9 Career - Train
+```{r}
+neg_career_train_comments <- as.data.frame(Neg_Comment[grep(career_train_pattern, Neg_Comment$cons, value = FALSE, perl = TRUE),])
+
+TEST2 <- TEST2 %>%
+    mutate(neg_career_train = ifelse(cons %in% neg_career_train_comments$cons, "Y",
+                             "N"))
+```
+
+#10 Compensation - Pay
+```{r}
+neg_compensation_pay_comments <- as.data.frame(Neg_Comment[grep(compensation_pay_pattern, Neg_Comment$cons, value = FALSE, perl = TRUE),])
+
+TEST2 <- TEST2 %>%
+    mutate(neg_compensation_pay = ifelse(cons %in% neg_compensation_pay_comments$cons, "Y",
+                             "N"))
+```
+
+#11 Compensation - fair
+```{r}
+neg_compensation_fair_comments <- as.data.frame(Neg_Comment[grep(compensation_fair_pattern, Neg_Comment$cons, value = FALSE, perl = TRUE),])
+
+TEST2 <- TEST2 %>%
+    mutate(neg_compensation_fair = ifelse(cons %in% neg_compensation_fair_comments$cons, "Y",
+                             "N"))
+```
+
+#12 Compensation - Competitiveness
+```{r}
+neg_compensation_competitiveness_comments <- as.data.frame(Neg_Comment[grep(compensation_competitiveness_pattern, Neg_Comment$cons, value = FALSE, perl = TRUE),])
+
+TEST2 <- TEST2 %>%
+    mutate(neg_compensation_competitiveness = ifelse(cons %in% neg_compensation_competitiveness_comments$cons, "Y",
+                             "N"))
+```
+
+#13 Manager - feedback
+```{r}
+neg_manager_feedback_comments <- as.data.frame(Neg_Comment[grep(manager_feedback_pattern, Neg_Comment$cons, value = FALSE, perl = TRUE),])
+
+TEST2 <- TEST2 %>%
+    mutate(neg_manager_feedback = ifelse(cons %in% neg_manager_feedback_comments$cons, "Y",
+                             "N"))
+```
+
+#14 Manager - leadership
+```{r}
+neg_manager_leadership_comments <- as.data.frame(Neg_Comment[grep(manager_leadership_pattern, Neg_Comment$cons, value = FALSE, perl = TRUE),])
+
+TEST2 <- TEST2 %>%
+    mutate(neg_manager_leadership = ifelse(cons %in% neg_manager_leadership_comments$cons, "Y",
+                             "N"))
+```
+
+#15 Safety
+```{r}
+neg_safety_comments <- as.data.frame(Neg_Comment[grep(safety_pattern, Neg_Comment$cons, value = FALSE, perl = TRUE),])
+
+TEST2 <- TEST2 %>%
+    mutate(neg_safety = ifelse(cons %in% neg_safety_comments$cons, "Y",
+                             "N"))
+```
+
+
+#16 Affect
+```{r}
+neg_affect_comments <- as.data.frame(Neg_Comment[grep(affect_pattern, Neg_Comment$cons, value = FALSE, perl = TRUE),])
+
+TEST2 <- TEST2 %>%
+    mutate(neg_affect = ifelse(cons %in% neg_affect_comments$cons, "Y",
+                             "N"))
+```
+
+
+#17 Culture - Value
+```{r}
+neg_culture_value_comments <- as.data.frame(Neg_Comment[grep(culture_value_pattern, Neg_Comment$cons, value = FALSE, perl = TRUE),])
+
+TEST2 <- TEST2 %>%
+    mutate(neg_culture_value = ifelse(cons %in% neg_culture_value_comments$cons, "Y",
+                             "N"))
+```
+
+#18 Culture - Sustainability
+```{r}
+neg_culture_sustain_comments <- as.data.frame(Neg_Comment[grep(culture_sustain_pattern, Neg_Comment$cons, value = FALSE, perl = TRUE),])
+
+TEST2 <- TEST2 %>%
+    mutate(neg_culture_sustain = ifelse(cons %in% neg_culture_sustain_comments$cons, "Y",
+                             "N"))
+```
+
+#19 Culture - Team
+```{r}
+neg_culture_team_comments <- as.data.frame(Neg_Comment[grep(culture_team_pattern, Neg_Comment$cons, value = FALSE, perl = TRUE),])
+
+TEST2 <- TEST2 %>%
+    mutate(neg_culture_team = ifelse(cons %in% neg_culture_team_comments$cons, "Y",
+                             "N"))
+```
+
+#20 Culture - work-family balance
+```{r}
+neg_culture_wfb_comments <- as.data.frame(Neg_Comment[grep(culture_wfb_pattern, Neg_Comment$cons, value = FALSE, perl = TRUE),])
+
+TEST2 <- TEST2 %>%
+    mutate(neg_culture_wfb = ifelse(cons %in% neg_culture_wfb_comments$cons, "Y",
+                             "N"))
+```
+
+
+#21 Culture - mental health
+```{r}
+neg_culture_mental_comments <- as.data.frame(Neg_Comment[grep(culture_mental_pattern, Neg_Comment$cons, value = FALSE, perl = TRUE),])
+
+TEST2 <- TEST2 %>%
+    mutate(neg_culture_mental = ifelse(cons %in% neg_culture_mental_comments$cons, "Y",
+                             "N"))
+```
+
+
+#22 Culture - work condition
+```{r}
+neg_culture_work_comments <- as.data.frame(Neg_Comment[grep(culture_work_pattern, Neg_Comment$cons, value = FALSE, perl = TRUE),])
+
+TEST2 <- TEST2 %>%
+    mutate(neg_culture_work = ifelse(cons %in% neg_culture_work_comments$cons, "Y",
+                             "N"))
+```
+
+#23 Autonomy
+```{r}
+neg_autonomy_comments <- as.data.frame(Neg_Comment[grep(autonomy_pattern, Neg_Comment$cons, value = FALSE, perl = TRUE),])
+
+TEST2 <- TEST2 %>%
+    mutate(neg_autonomy = ifelse(cons %in% neg_autonomy_comments$cons, "Y",
+                             "N"))
+```
+
+#24 Other
+
+Let's also create a topic to cover everything that is not captured. We will need to review these, it could be deficient coding for the categories.
+```{r}
+TEST2 <- TEST2 %>%
+    mutate(Other = apply(TEST2, 1, function(y){ ifelse("Y" %in% y, "N", "Y")}))
+
+```
+
+
+# Exporting Excel
+
+Now let's export the Pros comment into an Excel
+```{r}
+INTRO <- c("HoneyWell",
+
+         "Data Source: Glassdoor",
+
+         "Data As Of: Q2 2022",
+
+         "Prepared on: 7/23/2023",
+
+         "Prepared by: Tey")
+
+wb <- openxlsx::createWorkbook() #Create a work book
+
+#Comment Report
+
+addWorksheet(wb, "Comment Report") #name the worksheet in Excel
+
+writeData(wb, "Comment Report", INTRO) #Write your INTRO
+
+
+#Create style
+
+style1 <- createStyle(fontColour = "#000080", textDecoration = "Bold") #Choose your custom font color (https://www.rgbtohex.net/) and make it bold. Call it style1
+
+addStyle(wb, style = style1, rows= 1:5, cols = 1, sheet = "Comment Report") #add this style to your worksheet. Tell it which rows and columns
+
+writeData(wb, "Comment Report", TEST, startRow = 8) #put your DF (in this case TEST) into the sheet under your writing (row 8)
+
+hs1 <- createStyle(textDecoration = "Bold") #create a new style for heading
+
+addStyle(wb, style = hs1, rows = 8, cols = 1:50, sheet = "Comment Report") #Tell it where to go. We'll do 50 columns in this case so it can grow if needed
+
+#Freeze Panes
+
+#Also check here: https://stackoverflow.com/questions/37677326/applying-style-to-all-sheets-of-a-workbook-using-openxlsx-package-in-r
+
+freezePane(wb, "Comment Report", firstActiveRow = 9) #Freeze those panes. You know you want to. Tell it where to start.
+
+#Add filter
+
+addFilter(wb, "Comment Report", row = 8, cols = 1:50) #Add your filter as well. If you're trying to impress, you might as well go all in :)
+
+#Now we'll do a fancy save by customizing the file name using paste0 and system time. We'll also assume this was for the previous month. You'll also need to make this path the one you want on your computer. 
+
+
+saveWorkbook(wb, paste0("~/Library/Mobile Documents/com~apple~CloudDocs/UGA/Advance Stats/Positive", format(floor_date(Sys.Date()-months(1), "month"), "%B_%Y") , ".xlsx"), overwrite = TRUE)
+```
+
+
+```{r}
+INTRO <- c("HoneyWell",
+
+         "Data Source: Glassdoor",
+
+         "Data As Of: Q2 2022",
+
+         "Prepared on: 7/23/2023",
+
+         "Prepared by: Tey")
+
+wb <- openxlsx::createWorkbook() 
+
+addWorksheet(wb, "Comment Report 2") 
+
+writeData(wb, "Comment Report 2", INTRO) 
+
+style1 <- createStyle(fontColour = "#000080", textDecoration = "Bold") 
+
+addStyle(wb, style = style1, rows= 1:5, cols = 1, sheet = "Comment Report 2") 
+
+writeData(wb, "Comment Report 2", TEST2, startRow = 8) 
+
+hs1 <- createStyle(textDecoration = "Bold") 
+
+addStyle(wb, style = hs1, rows = 8, cols = 1:50, sheet = "Comment Report 2") 
+
+freezePane(wb, "Comment Report 2", firstActiveRow = 9) 
+
+addFilter(wb, "Comment Report 2", row = 8, cols = 1:50)
+
+saveWorkbook(wb, paste0("~/Library/Mobile Documents/com~apple~CloudDocs/UGA/Advance Stats/Homework/Negative", format(floor_date(Sys.Date()-months(1), "month"), "%B_%Y") , ".xlsx"), overwrite = TRUE)
+```
+
+
+
+
+
+
+
